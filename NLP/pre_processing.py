@@ -140,7 +140,7 @@ print(text)
 # here we start with the real processing of data, until now we made the text concie, uniform, standard, but now we need to split it so that it can be fed into our algorithms
 # there are different ways to do this, per word, per sentence, many libraries give different options
 # we here present one of them 
-text = "New text. This is to show how tokenization works! Obviously this should be done in the beginning, otherwise we lose all punctuations... how can we split sentences without puncuation?!"
+text = "New text. This is showing how tokenization works! Obviously this should be done in the beginning, otherwise we lose all punctuations. How could we split sentences without punctuation?!"
 
 nltk.download("punkt_tab")
 from nltk.tokenize import word_tokenize,sent_tokenize
@@ -152,4 +152,28 @@ sentences_token = sent_tokenize(text)
 print(f"\nText tokenized for sentences:\n{sentences_token}")
 
 # 10. Stemming
+# i reduces the words to their root, so "walking", "walked" , "walk" all goes to "walk". This also standardize text and reduce the number of different variations we need to store, since they have the same semantic meaning, in this case the walking action 
 
+from nltk.stem.porter import PorterStemmer
+
+def stem_words(text):
+    return " ".join([PorterStemmer().stem(word) for word in text.split()])
+
+stemmed_text = stem_words(text)
+
+print(f"\nWe now reduce the words to their roots:\n{stemmed_text}")
+
+# 10: Lemmatization
+# this is an advanced form of stemming, where the words are reduced to their lemma, without considering their meaning.
+nltk.download('wordnet')
+from nltk.stem import WordNetLemmatizer
+wordnet_lemmatizer = WordNetLemmatizer()
+
+text = "I am going to show you some words for which this is different than just stemming, for example is and has would become i and ha using stemming, look what are we getting now!"
+
+# we remove punctuation and take single words
+sentence_words = word_tokenize(remove_punctuation(text))
+
+# now for each word we print the lemma 
+for word in sentence_words:
+    print ("{0:20}{1:20}".format(word,wordnet_lemmatizer.lemmatize(word,pos='v')))
