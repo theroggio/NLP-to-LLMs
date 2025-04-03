@@ -210,15 +210,20 @@ class BiLSTM(torch.nn.Module):
         return total_loss/self.num_batches_t
 
     def test(self):
+        conf_mat = torch.zeros(18,18)
         for batch in range(self.num_batches_v):
-            res = self.forward(self.val_data[batch*self.batch_size : (batch+1)*self.batch_size])
-            import ipdb; ipdb.set_trace()
+            res = torch.Tensor(self.forward(self.val_data[batch*self.batch_size : (batch+1)*self.batch_size]))
+            for id0 in range(18):
+                for id1 in range(18):
+                    conf_mat[id0,id1] += ((res == id0) * (self.val_label[batch*8 : (batch+1)*8] == id1)).sum()
+        
+        print(f"Accuracy is: {100 * conf_mat.diag().sum() / conf_mat.sum()}")
 
 
 model = BiLSTM(len(words)+2, embedding, 50, num_tag, max_len)
 
 model.set_data(X_train, y_train, X_test, y_test, batch_size=8, epochs=epochs)
 
-model.fit(0)
-
-model.test()
+for ee in range(50):
+    model.fit(ee)
+    model.test()
