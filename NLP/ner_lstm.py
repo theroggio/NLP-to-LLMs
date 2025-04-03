@@ -10,6 +10,7 @@ from sklearn_crfsuite import CRF
 from sklearn_crfsuite.metrics import flat_f1_score
 from sklearn_crfsuite.metrics import flat_classification_report
 import torch
+import numpy as np
 
 # reading the dataset
 df = pd.read_csv("data/ner_dataset.csv", encoding="ISO-8859-1")
@@ -154,10 +155,7 @@ y = [ torch.nn.functional.one_hot(i.long(), num_classes = num_tag + 1) for i in 
 # split dataset
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size = 0.15)
 
-
 ## create the LSTM model
-
-# model
 from torchcrf import CRF
 class BiLSTM(torch.nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, num_tags, max_len):
@@ -166,26 +164,59 @@ class BiLSTM(torch.nn.Module):
         self.embedding = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0)
         self.lstm = torch.nn.LSTM(input_size=embedding_dim, hidden_size=hidden_dim, batch_first=True,
                             bidirectional=True, dropout=0.1)
-        self.fc = torch.nn.Linear(hidden_dim * 2, 50)
+        self.fc = torch.nn.Linear(hidden_dim * 2, 18)
         self.relu = torch.nn.ReLU()
         self.crf = CRF(num_tags=num_tags+1, batch_first=True)
-    
+        self.optimizer = torch.optim.RMSprop(self.parameters(), lr=0.001)
+
+    def set_data(self, xtrain, ytrain, xval, yval, batch_size, epochs):
+        # put in train and val the correct data
+        self.train_data = xtrain 
+        self.train_label = ytrain
+        self.val_data = xval
+        self.val_label = yval
+
+        # define loops stop conditions
+        self.num_batches_t = 1 #int(self.train_data.shape[0] / batch_size)
+        self.num_batches_v = 1 #int(self.val_data.shape[0] /  batch_size)
+        self.epochs = epochs
+        self.batch_size = batch_size
+
+
     def forward(self, x, tags=None):
-        x = self.embedding(x)
+        x = self.embedding(x.long())
         x, _ = self.lstm(x)
         x = self.relu(self.fc(x))
         
         if tags is not None:  # Training mode
-            loss = -self.crf(x, tags, reduction='mean')
+            tags = torch.vstack([ tag.unsqueeze(0) for tag in tags ])
+            loss = -self.crf(x, tags[:,:,0], reduction='mean')
             return loss
         else:  # Inference mode
             return self.crf.decode(x)
 
-import ipdb; ipdb.set_trace()
+    def fit(self, current_epoch):
+        total_loss = 0.0
+        if current_epoch < self.epochs:
+            # training
+            for batch in range(self.num_batches_t):
+                self.optimizer.zero_grad() 
+                loss = self.forward(self.train_data[batch*self.batch_size : (batch+1)*self.batch_size] , self.train_label[batch*self.batch_size : (batch+1)*self.batch_size])
+                loss.backward()
+                optimizer.step()
+                total_loss =+ loss
+        return total_loss/self.num_batches_t
+
+    def test(self):
+        for batch in range(self.num_batches_v):
+            res = self.forward(self.val_data[batch*self.batch_size : (batch+1)*self.batch_size])
+            import ipdb; ipdb.set_trace()
+
+
 model = BiLSTM(len(words)+2, embedding, 50, num_tag, max_len)
-optimizer = optim.RMSprop(model.parameters(), lr=0.001)
 
-model.fit(X_train, np.array(y_train), batch_size=batch_size, epochs=epochs,
-                    validation_split=0.1, callbacks=[checkpointer])
+model.set_data(X_train, y_train, X_test, y_test, batch_size=batch_size, epochs=epochs)
 
-model.test(X_test)
+for xx in range(100): model.fit(xx)
+
+model.test()
