@@ -161,12 +161,12 @@ class BiLSTM(torch.nn.Module):
     def __init__(self, vocab_size, embedding_dim, hidden_dim, num_tags, max_len):
         super(BiLSTM, self).__init__()
         
-        self.embedding = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0)
+        self.embedding = torch.nn.Embedding(num_embeddings=vocab_size, embedding_dim=embedding_dim, padding_idx=0).cuda()
         self.lstm = torch.nn.LSTM(input_size=embedding_dim, hidden_size=hidden_dim, batch_first=True,
-                            bidirectional=True, dropout=0.1)
-        self.fc = torch.nn.Linear(hidden_dim * 2, 18)
-        self.relu = torch.nn.ReLU()
-        self.crf = CRF(num_tags=num_tags+1, batch_first=True)
+                            bidirectional=True, dropout=0.1).cuda()
+        self.fc = torch.nn.Linear(hidden_dim * 2, 18).cuda()
+        self.relu = torch.nn.ReLU().cuda()
+        self.crf = CRF(num_tags=num_tags+1, batch_first=True).cuda()
         self.optimizer = torch.optim.RMSprop(self.parameters(), lr=0.001)
 
     def set_data(self, xtrain, ytrain, xval, yval, batch_size, epochs):
@@ -174,23 +174,25 @@ class BiLSTM(torch.nn.Module):
         self.train_data = xtrain 
         self.train_label = ytrain
         self.val_data = xval
-        self.val_label = yval
+        self.val_label = torch.vstack([ y.unsqueeze(0) for y in yval])
+        self.val_label = torch.argmax(self.val_label,-1)
 
         # define loops stop conditions
-        self.num_batches_t = 1 #int(self.train_data.shape[0] / batch_size)
+        self.num_batches_t = int(self.train_data.shape[0] / batch_size)
         self.num_batches_v = 1 #int(self.val_data.shape[0] /  batch_size)
         self.epochs = epochs
         self.batch_size = batch_size
 
 
     def forward(self, x, tags=None):
-        x = self.embedding(x.long())
+        x = self.embedding(x.long().cuda())
         x, _ = self.lstm(x)
         x = self.relu(self.fc(x))
         
         if tags is not None:  # Training mode
             tags = torch.vstack([ tag.unsqueeze(0) for tag in tags ])
-            loss = -self.crf(x, tags[:,:,0], reduction='mean')
+            tags = torch.argmax(tags, -1)
+            loss = -self.crf(x, tags.cuda(), reduction='mean')
             return loss
         else:  # Inference mode
             return self.crf.decode(x)
@@ -203,8 +205,8 @@ class BiLSTM(torch.nn.Module):
                 self.optimizer.zero_grad() 
                 loss = self.forward(self.train_data[batch*self.batch_size : (batch+1)*self.batch_size] , self.train_label[batch*self.batch_size : (batch+1)*self.batch_size])
                 loss.backward()
-                optimizer.step()
-                total_loss =+ loss
+                self.optimizer.step()
+                total_loss += loss
         return total_loss/self.num_batches_t
 
     def test(self):
@@ -215,8 +217,8 @@ class BiLSTM(torch.nn.Module):
 
 model = BiLSTM(len(words)+2, embedding, 50, num_tag, max_len)
 
-model.set_data(X_train, y_train, X_test, y_test, batch_size=batch_size, epochs=epochs)
+model.set_data(X_train, y_train, X_test, y_test, batch_size=8, epochs=epochs)
 
-for xx in range(100): model.fit(xx)
+model.fit(0)
 
 model.test()
