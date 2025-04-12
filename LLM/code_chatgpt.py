@@ -156,7 +156,7 @@ c = a @ b
 # lets apply this to our example
 weights = torch.tril(torch.ones(T,T))
 weights /= weights.sum(1, keepdim=True)
-xbow_v2 = wei @ x # (T,T) @ (B,T,C) ----> (ghost B=1, T,T) @ (B,T,C) ----> (B,T,C) 
+xbow_v2 = weights @ x # (T,T) @ (B,T,C) ----> (ghost B=1, T,T) @ (B,T,C) ----> (B,T,C) 
 
 # this is way more efficient than the double for loop! And result is the same:
 print(torch.allclose(xbow, xbow_v2))
@@ -173,22 +173,126 @@ xbow_v3 = weights @ x
 # and end up with probabilities 
 print(torch.allclose(xbow_v2, xbow_v3))
 
+# this is not sufficient because we are still averaging
+# we want the network to learn which previous tokens to look at 
+# which one are really relevant for the prediction of the new one
+head_size = 16
+key = nn.Linear(C, head_size, bias=False) # this linear layer has weights that we can learn!
+query = nn.Linear(C, head_size, bias=False)
+value = nn.Linear(C, head_size, bias=False)
+# self attention: SELF because K,Q,V all comes from same X
+k = key(x) # B, T, 16
+q = query(x) # B, T, 16
+v = value(x)
+weights = q @ k.transpose(-2,-1) # B T 16 x B 16 T ---> B T T 
+
+# now we fo the same, remove the future, softmax 
+tril = torch.tril(torch.ones(T,T))
+weights = weights.masked_fill(tril == 0, float('-inf')) # this masking is not relevant for non-generative tasks
+                                                        # for example for text analysis, you have access to everything
+                                                        # and you can just learn connections between past and future tokens
+weights = F.softmax(weights, dim=-1)
+out = weights @ v
+
+# scaled attention has an extra normalization technique
+# we change this line:  weights = q @ k.transpose(-2,-1) # B T 16 x B 16 T ---> B T T 
+weights = q @ k.transpose(-2,-1) * head_size**(-0.5)
+# this scaling is important before softmax which often creates very squewed distributions if values are large
+
+# here we put it together to use it more easily
+class Head(nn.Module):
+    def __init__(self, emb_size,  head_size):
+        super().__init__()
+        self.key = nn.Linear(emb_size, head_size, bias=False).cuda()
+        self.query = nn.Linear(emb_size, head_size, bias=False).cuda()
+        self.value = nn.Linear(emb_size, head_size, bias=False).cuda()
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B,T,C = x.shape
+        k = self.key(x)
+        q = self.query(x)
+        v = self.value(x)
+
+        w = q @ k.transpose(-2,-1) * C**(-0.5)
+        w = w.masked_fill(self.tril[:T,:T] == 0, float('-inf'))
+        w = F.softmax(w,dim=-1)
+        return w @ v
+
+# multi head attention
+class MultiHeadAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, head_size):
+        super().__init__()
+        self.heads = nn.ModuleList([Head(embed_dim, head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(embed_dim, embed_dim)
+
+    def forward(self, x):
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.proj(out)
+        return out
+
+# feed forward layer add non linearity after attention
+class FeedFoward(nn.Module):
+    """ a simple linear layer followed by a non-linearity """
+
+    def __init__(self, n_embd, dropout=0.0):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(n_embd, 4 * n_embd), # this 4 multiplier comes from paper
+            nn.ReLU(),
+            nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+# common block to use !!
+class Block(nn.Module):
+    """ Transformer block: communication followed by computation """
+
+    def __init__(self, n_embd, n_head):
+        # n_embd: embedding dimension, n_head: the number of heads we'd like
+        super().__init__()
+        head_size = n_embd // n_head
+        self.sa = MultiHeadAttention(n_embd, n_head, head_size)
+        self.ffwd = FeedFoward(n_embd)
+        self.ln1 = nn.LayerNorm(n_embd)
+        self.ln2 = nn.LayerNorm(n_embd)
+
+    def forward(self, x):
+        # the block starts to be deep, we need residuals!
+        x = x + self.sa(self.ln1(x))
+        x = x + self.ffwd(self.ln2(x))
+        return x
+
 # lets now make the model
 class AttentionNet(nn.Module):
 
     def __init__(self, vocab_size, block_size, embed_dim):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, embed_dim)
-        self.position_embedding_table = nn.Embedding(block_size, embed_dim)
-        self.lm_head = nn.Linear(embed_dim, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocab_size, embed_dim).cuda()
+        self.position_embedding_table = nn.Embedding(block_size, embed_dim).cuda()
+        # add the self attention 
+        # self.sa_head = Head(embed_dim, embed_dim).cuda()
+        # self.sa_head = MultiHeadAttention(embed_dim, 4, int(embed_dim/4) )
+        self.lm_head = nn.Linear(embed_dim, vocab_size).cuda()
+        # self.ffw = FeedFoward(embed_dim, dropout=0.1)
+        self.blocks = nn.Sequential(*[Block(embed_dim, 4) for _ in range(4)])
+        self.ln_f = nn.LayerNorm(embed_dim)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
-        pos_emb = self.position_embedding_table(torch.arange(T))
+        pos_emb = self.position_embedding_table(torch.arange(T).cuda())
         token_emb = self.token_embedding_table(idx)
         x = token_emb + pos_emb
+        # apply self attention
+        #x = self.sa_head(x)
+        #x = self.ffw(x)
+        x = self.blocks(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x)
- 
+
         if targets is None:
             return logits , None
         
@@ -203,7 +307,7 @@ class AttentionNet(nn.Module):
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
             # get predictions
-            logits, loss = self(idx)
+            logits, loss = self(idx[:, -block_size:]) # need to be sure we use only block_size elements or the pos embed breaks
             # get last step
             logits = logits[:,-1,:]
             # get probabilities
@@ -214,6 +318,22 @@ class AttentionNet(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)
         return idx
 
+model = AttentionNet(vocab_size, block_size=8, embed_dim=32).cuda()
+# create optimizer, needed to train
+optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
+batch_size = 32
+for steps in range(5000):
 
-import ipdb; ipdb.set_trace()
+    xb, yb = get_batch("train")
+
+    logits, loss = model(xb.cuda(),yb.cuda())
+
+    optimizer.zero_grad(set_to_none=True)
+    loss.backward()
+    optimizer.step()
+
+    if steps in [500, 1000, 1500, 3000, 4000, 4999]: # small validation to check how it is going
+        idx = torch.zeros((1,1), dtype=torch.long).cuda()
+        print(tokenizer.decode(model.generate(idx, max_new_tokens=100)[0].tolist()))
+
