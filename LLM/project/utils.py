@@ -2,8 +2,8 @@
 
 # Tokenizer
 import tiktoken
-def get_tokenizer(tokenizer_name, model_name = None):
-    if model_name == None:
+def get_tokenizer(tokenizer_name, model_name):
+    if model_name == "":
         enc = tiktoken.get_encoding(tokenizer_name)
     else:
         enc = tiktoken.encoding_for_model(model_name)
@@ -12,65 +12,33 @@ def get_tokenizer(tokenizer_name, model_name = None):
 
 from typing import Optional
 import torch
+import numpy as np
 import torch.nn as nn 
 class RotaryPosEmb(nn.Module):
-    def __init__(self, dim, max_len, base):
+    def __init__(self, dim, max_len, device):
         super().__init__()
-        self.dim = dim
+        self.d_model = dim
         self.max_len = max_len
-        self.base = base
-        self.rope_init()
+        self.device = device
+        p , i = np.meshgrid(np.arange(float(max_len)), np.arange(self.d_model/2)*2)
+        theta = (p/1e4**(i/self.d_model)).T
+        self.pos_emb = np.stack([np.sin(theta), np.cos(theta)], axis=-1)
+        self.pos_emb = self.pos_emb.reshape((self.max_len,self.d_model))[None]
+        self.get_freqs()
+    
+    def sinusoidal_embeddings(self):
+        return self.pos_emb # (1, maxlen, dim)
+    
+    def get_freqs(self):
+        self.sin_freqs = torch.tensor(np.repeat(self.pos_emb[..., None, ::2], repeats=2, axis=-1)).to(self.device)
+        self.cos_freqs = torch.tensor(np.repeat(self.pos_emb[..., None, 1::2], repeats=2, axis=-1)).to(self.device)
+    
+    def forward(self, q): #, k):
+        T = q.shape[0]
+  
+        minus_swap_alternate = lambda x: torch.stack([-x[..., 1::2], x[..., ::2]], axis=-1).reshape(x.shape)
 
-    def rope_init(self):
-        theta = 1.0 / (self.base ** torch.arange(0, self.dim, 2)[: (self.dim // 2)].float() / self.dim)
-        self.register_buffer("theta", theta, persistent=False)
-        self.build_rope_cache()
+        q = q * self.cos_freqs[:, :T, :, :] + minus_swap_alternate(q) * self.sin_freqs[:, :T, :, :] # (B, T, h, dq)*(1, T, 1, dq) + (B, T, h, dq)*(1, T, 1, dq)
+        #k = k * self.cos_freqs[:, :T, :, :] + minus_swap_alternate(k) * self.sin_freqs[:, :T, :, :] # (B, T, h, dq)*(1, T, 1, dq) + (B, T, h, dq)*(1, T, 1, dq)
+        return q #, k # (B, T, h, dq), (B, T, h, dq)
 
-    def build_rope_cache(self):
-        # Create position indexes `[0, 1, ..., max_len - 1]`
-        seq_idx = torch.arange(
-            self.max_len, dtype=self.theta.dtype, device=self.theta.device
-        )
-
-        # Outer product of theta and position index; output tensor has
-        # a shape of [max_seq_len, dim // 2]
-        idx_theta = torch.einsum("i, j -> ij", seq_idx, self.theta).float()
-
-        # cache includes both the cos and sin components and so the output shape is
-        # [max_seq_len, dim // 2, 2]
-        cache = torch.stack([torch.cos(idx_theta), torch.sin(idx_theta)], dim=-1)
-        self.register_buffer("cache", cache, persistent=False)
-
-    def forward(self, x, input_pos: Optional[torch.Tensor] = None):
-        # input tensor has shape [b, s, n_h, h_d]
-        seq_len = x.size(1)
-
-        # extract the values based on whether input_pos is set or not
-        rope_cache = (
-            self.cache[:seq_len] if input_pos is None else self.cache[input_pos]
-        )
-
-        # reshape input; the last dimension is used for computing the output.
-        # Cast to float to match the reference implementation
-        # tensor has shape [b, s, n_h, h_d // 2, 2]
-        xshaped = x.float().reshape(*x.shape[:-1], -1, 2)
-
-        # reshape the cache for broadcasting
-        # tensor has shape [b, s, 1, h_d // 2, 2] if packed samples,
-        # otherwise has shape [1, s, 1, h_d // 2, 2]
-        rope_cache = rope_cache.view(-1, xshaped.size(1), 1, xshaped.size(3), 2)
-
-        # tensor has shape [b, s, n_h, h_d // 2, 2]
-        x_out = torch.stack(
-            [
-                xshaped[..., 0] * rope_cache[..., 0]
-                - xshaped[..., 1] * rope_cache[..., 1],
-                xshaped[..., 1] * rope_cache[..., 0]
-                + xshaped[..., 0] * rope_cache[..., 1],
-            ],
-            -1,
-        )
-
-        # tensor has shape [b, s, n_h, h_d]
-        x_out = x_out.flatten(3)
-        return x_out.type_as(x)

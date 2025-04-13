@@ -2,8 +2,9 @@
 
 import torch
 import torch.nn as nn
+from torch.nn import functional as F
 
-class HeadAttention(nn.Module):
+class Head(nn.Module):
     def __init__(self, inner, head_size, block_size, dropout=0.1, decode=False):
         super().__init__()
         self.key = nn.Linear(inner, head_size, bias=False)
@@ -26,9 +27,9 @@ class HeadAttention(nn.Module):
         return ww @ v
 
 class MultiHeadAttention(nn.Module):
-    def __init__(self, inner, num_heads, block_size, dropout, decode=false):
+    def __init__(self, inner, num_heads, block_size, dropout, decode=False):
         super().__init__()
-        self.heads = nn.ModuleList(*[Head(inner, inner//num_heads, block_size, dropout, decode) for _ in range(num_heads)])
+        self.heads = nn.ModuleList([Head(inner, inner//num_heads, block_size, dropout, decode) for _ in range(num_heads)])
         self.proj = nn.Linear(inner, inner)
         self.dropout = nn.Dropout(dropout)
 
@@ -98,10 +99,10 @@ class Encoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         inner = cfg["embedding_size"]
-        num_heads = cfg["n_heads"]
+        num_heads = cfg["num_heads"]
         block_size = cfg["block_size"]
         dropout = cfg["dropout"]
-        self.blocks = nn.ModuleList(*[Block(inner, num_heads, block_size, dropout) for _ in range(6)])
+        self.blocks = nn.Sequential(*[Block(inner, num_heads, block_size, dropout) for _ in range(6)])
 
     def forward(self, x):
         for i in range(len(self.blocks)):
@@ -113,14 +114,15 @@ class Decoder(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         inner = cfg["embedding_size"]
-        num_heads = cfg["n_heads"]
+        num_heads = cfg["num_heads"]
         block_size = cfg["block_size"]
         dropout = cfg["dropout"]
-        self.blocks = nn.ModuleList(*[Block(inner, num_heads, block_size, dropout, True) for _ in range(6)])
+        self.blocks = nn.Sequential(*[Block(inner, num_heads, block_size, dropout, True) for _ in range(6)])
+        self.proj = nn.Linear(inner, cfg["out"])
 
-   def forward(self,x): 
+    def forward(self,x): 
         for i in range(len(self.blocks)):
             x = self.blocks[i](x)
-        return x
+        return self.proj(x)
 
 
