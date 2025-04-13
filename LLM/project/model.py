@@ -53,7 +53,8 @@ class LLM(nn.Module):
 
     def train(self, data):
         total_loss = 0.0
-        steps = 200
+        min_loss = 20
+        steps = 1000
         data = torch.tensor(self.tokenizer.encode(data), dtype=torch.long).to(self.device)
         for epoch in range(self.cfg["epochs"]):
             for _ in range(steps): # num steps for epoch
@@ -64,14 +65,20 @@ class LLM(nn.Module):
                 loss.backward()
                 self.optimizer.step()
             total_loss /= steps
+            if total_loss < min_loss:
+                min_loss = total_loss
+                self.save_checkpoint()
             print(f"At epoch {epoch} mean loss is: {total_loss}.")
             total_loss *= 0.0
             if epoch % 10 == 0:
                 self.generate()
     
+    def save_checkpoint(self):
+        torch.save(self.state_dict(), "best.ckpt")
+
     def generate(self):
         with torch.no_grad():
-            x = torch.tensor(self.tokenizer.encode("Two households, both alike in dignity,\nIn fgair Verona, where we lay our scene")).unsqueeze(0)[:,:16].to(self.device)
+            x = torch.tensor(self.tokenizer.encode("Two households, both alike in dignity,\nIn fair Verona, where we lay our scene")).unsqueeze(0)[:,:16].to(self.device)
             for _ in range(150):
                 # get predictions
                 logits, loss = self(x[:, -16:]) # need to be sure we use only block_size elements or the pos embed breaks
