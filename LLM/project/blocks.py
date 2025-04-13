@@ -47,7 +47,25 @@ class SwiGLU(nn.Module):
         hidden = F.silu(x1) * x2
         return self.w3(hidden)
 
-class FeedFoward(nn.Module):
+class MoE(nn.Module):
+    def __init__(self, n_experts, n_embd, dropout):
+        super().__init__()
+        self.router = nn.Sequential(
+            nn.Linear(n_embd, 2 * n_embd),
+            SwiGLU(2 * n_embd),
+            nn.Linear(2 * n_embd, n_experts),
+        )
+        self.experts = [ FeedForward(n_embd, dropout) for _ in range(n_experts) ]
+
+    def forward(self, x):
+        router_out = self.router(x)
+        prob_expert = F.Softmax(router_out, dim=-1)
+        expert_id = torch.argmax(prob_expert)
+        out = self.experts[ expert_id ](x) * prob_expert[ expert_id] 
+        return out
+
+
+class FeedForward(nn.Module):
     def __init__(self, n_embd, dropout):
         super().__init__()
         self.net = nn.Sequential(
