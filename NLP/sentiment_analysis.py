@@ -80,19 +80,27 @@ class SentimentAnalyzer(object):
             words = re.findall(r"\b\w+\b", sentence)
             sentiment = sentiments[_id] 
             for word in words:
-                self.positive_prob[ self.bowlist.index(word) ] += (float)(sentiment)
-                self.count[  self.bowlist.index(word) ] += 1
+                try:
+                    self.positive_prob[ self.bowlist.index(word) ] += (float)(sentiment)
+                    self.count[  self.bowlist.index(word) ] += 1
+                except:
+                    continue
         self.positive_prob /= self.count
             
     def score(self, text):
+        print(text)
         words = re.findall(r"\b\w+\b", text)
         score = 1.0
         for word in words:
-            if self.count[ self.bowlist.index(word) ] != 0:
-                score *= self.positive_prob[ self.bowlist.index(word) ]
-        print(score)
+            try:
+                val = self.positive_prob[ self.bowlist.index(word) ]
+                score *= val
+            except:
+                print("Missing word.")
+        print(score > 0)
 
 
-analyzer = SentimentAnalyzer(df)
+analyzer = SentimentAnalyzer(df[:1000])
 analyzer.train(df[:1000])
 analyzer.score(df["reviewText"][1001])
+
