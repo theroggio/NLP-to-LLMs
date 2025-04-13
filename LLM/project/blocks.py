@@ -5,6 +5,7 @@ import torch.nn as nn
 
 class HeadAttention(nn.Module):
     def __init__(self, inner, head_size, block_size, dropout=0.1, decode=False):
+        super().__init__()
         self.key = nn.Linear(inner, head_size, bias=False)
         self.query = nn.Linear(inner, head_size, bias=False)
         self.value = nn.Linear(inner, head_size, bias=False)
@@ -26,6 +27,7 @@ class HeadAttention(nn.Module):
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, inner, num_heads, block_size, dropout, decode=false):
+        super().__init__()
         self.heads = nn.ModuleList(*[Head(inner, inner//num_heads, block_size, dropout, decode) for _ in range(num_heads)])
         self.proj = nn.Linear(inner, inner)
         self.dropout = nn.Dropout(dropout)
@@ -37,6 +39,7 @@ class MultiHeadAttention(nn.Module):
 
 class SwiGLU(nn.Module):
     def __init__(self, inner):
+        super().__init__()
         self.w1 = nn.Linear(inner, inner)
         self.w2 = nn.Linear(inner, inner)
         self.w3 = nn.Linear(inner, inner)
@@ -80,6 +83,7 @@ class FeedForward(nn.Module):
 
 class Block(nn.Module):
     def __init__(self, inner, num_heads, block_size, dropout, decode=False):
+        super().__init__()
         self.mh_attention = MultiHeadAttention(inner, num_heads, block_size, dropout, decode)
         self.ff = FeedForward(inner, dropout)
         self.ln1 = nn.modules.normalization.RMSNorm(inner)
@@ -92,6 +96,7 @@ class Block(nn.Module):
 
 class Encoder(nn.Module):
     def __init__(self, cfg):
+        super().__init__()
         inner = cfg["embedding_size"]
         num_heads = cfg["n_heads"]
         block_size = cfg["block_size"]
@@ -106,6 +111,7 @@ class Encoder(nn.Module):
 
 class Decoder(nn.Module):
     def __init__(self, cfg):
+        super().__init__()
         inner = cfg["embedding_size"]
         num_heads = cfg["n_heads"]
         block_size = cfg["block_size"]
