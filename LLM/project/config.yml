@@ -1,7 +1,7 @@
-block_size: 16
-batch_size: 2
+block_size: 64
+batch_size: 16
 epochs: 100
-embedding_size: 16
+embedding_size: 64
 num_heads: 4
 device: 'cuda:0'
 tokenizer_name: 'o200k_base' 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
-from blocks import Encoder, Decoder
+from blocks import Encoder, Decoder, MoEDecoder
 from utils import get_tokenizer, RotaryPosEmb
 import yaml
 
@@ -15,9 +15,9 @@ class LLM(nn.Module):
         self.pose_emb = RotaryPosEmb( torch.tensor(cfg["embedding_size"]), torch.tensor(1000), device=self.device)
         self.encoder = Encoder(cfg).to(self.device)
         cfg["out"] = self.tokenizer.max_token_value
-        self.decoder = Decoder(cfg).to(self.device)
+        self.decoder = MoEDecoder(cfg).to(self.device)
         self.normalizer = nn.modules.normalization.RMSNorm(self.tokenizer.max_token_value).to(self.device)
-        self.optimizer = torch.optim.AdamW(self.parameters(), lr=1e-3)
+        self.optimizer = torch.optim.AdamW(self.parameters(), lr=5e-3)
 
     def getLoss(self, x, y):
         return F.cross_entropy(x.float(),y.long())
@@ -53,20 +53,20 @@ class LLM(nn.Module):
 
     def train(self, data):
         total_loss = 0.0
-        min_loss = 20
-        steps = 1000
+        min_loss = 200
+        steps = 500
         data = torch.tensor(self.tokenizer.encode(data), dtype=torch.long).to(self.device)
         for epoch in range(self.cfg["epochs"]):
             for _ in range(steps): # num steps for epoch
                 x, y = self.get_batch(data)
                 self.optimizer.zero_grad()
                 out, loss = self.forward(x,y)
-                total_loss += loss
                 loss.backward()
                 self.optimizer.step()
+                total_loss += loss.detach()
             total_loss /= steps
             if total_loss < min_loss:
-                min_loss = total_loss
+                min_loss = total_loss.detach()
                 self.save_checkpoint()
             print(f"At epoch {epoch} mean loss is: {total_loss}.")
             total_loss *= 0.0
@@ -78,10 +78,13 @@ class LLM(nn.Module):
 
     def generate(self):
         with torch.no_grad():
-            x = torch.tensor(self.tokenizer.encode("Two households, both alike in dignity,\nIn fair Verona, where we lay our scene")).unsqueeze(0)[:,:16].to(self.device)
+            x = torch.tensor(self.tokenizer.encode("Two households, both alike in dignity,\nIn fair Verona, where we lay our scene")).unsqueeze(0)[:,:self.cfg["block_size"]].to(self.device)
+            if x.shape[1] < self.cfg["block_size"]:
+                #padding to block_size
+                x = F.pad(x, (self.cfg["block_size"] - x.shape[1] - 1, 1), "constant", 0 )
             for _ in range(150):
                 # get predictions
-                logits, loss = self(x[:, -16:]) # need to be sure we use only block_size elements or the pos embed breaks
+                logits, loss = self(x[:, -self.cfg["block_size"]:]) # need to be sure we use only block_size elements or the pos embed breaks
                 # get last step
                 logits = logits[:,-1,:]
                 # get probabilities
