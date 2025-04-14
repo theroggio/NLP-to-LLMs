@@ -1,0 +1,11 @@
+# add python env
+/nlp
+
+# add all checkpoints
+**/*.ckpt
+
+# add all pycache
+**/__pycache__
+
+# remove all data folders 
+**/data
