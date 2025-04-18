@@ -10,6 +10,21 @@ def get_tokenizer(tokenizer_name, model_name):
     assert enc.decode(enc.encode("Bella fra")) == "Bella fra"
     return enc
 
+import os
+def get_data(folder_name):
+    files = os.listdir(folder_name)
+    files.sort()
+    shakespear = []
+    modern = []
+    # files have modern and traditional, so we have half the len of list
+    for title in files[::2]:
+        with open(os.path.join(folder_name, title),"r") as f:
+            shakespear.append(f.read())
+        with open(os.path.join(folder_name, title.replace("original","modern")),"r") as f:
+            modern.append(f.read())
+    return shakespear, modern
+
+
 from typing import Optional
 import torch
 import numpy as np
