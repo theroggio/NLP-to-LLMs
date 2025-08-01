@@ -1,95 +1,82 @@
-import tiktoken
-from langchain.embeddings import HuggingFaceEmbeddings
-import numpy as np
+from fastapi import FastAPI, APIRouter, Request
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+from typing import List
+import os
+from langchain_community.document_loaders import PyPDFLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain_community.vectorstores import Chroma
+from langchain_ollama import OllamaLLM
+from langchain.prompts import ChatPromptTemplate
+import asyncio
 
+app = FastAPI()
+router = APIRouter()
 
-question = "What kinds of pets do I like?"
-document = "My favorite pet is a cat."
+# Pydantic models
+class Message(BaseModel):
+    role: str
+    content: str
 
-def cosine_similarity(vec1, vec2):
-    dot_product = np.dot(vec1, vec2)
-    norm_vec1 = np.linalg.norm(vec1)
-    norm_vec2 = np.linalg.norm(vec2)
-    return dot_product / (norm_vec1 * norm_vec2)
+class ChatPayload(BaseModel):
+    messages: List[Message]
 
-def num_tokens_from_string(string: str, encoding_name: str) -> int:
-    """Returns the number of tokens in a text string."""
-    encoding = tiktoken.get_encoding(encoding_name)
-    num_tokens = len(encoding.encode(string))
-    return num_tokens
+    class Config:
+        schema_extra = {
+            "example": {
+                "messages": [{"role": "user", "content": "What does leaf instance segmentation mean?"}]
+            }
+        }
+
+# Pre-load documents and build vector store
+pdf_path = "pdfs/"
+docs = []
+for pdf in os.listdir(pdf_path):
+    loader = PyPDFLoader(os.path.join(pdf_path, pdf))
+    doc = loader.load()
+    docs.extend(doc)
+
+text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(chunk_size=300, chunk_overlap=50)
+splits = text_splitter.split_documents(docs)
 
 embd = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-query_result = embd.embed_query(question)
-document_result = embd.embed_query(document)
+vectorstore = Chroma.from_documents(documents=splits, embedding=embd)
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
 
-similarity = cosine_similarity(query_result, document_result)
-
-# Load blog
-import bs4
-from langchain_community.document_loaders import WebBaseLoader
-loader = WebBaseLoader(
-    web_paths=("https://lilianweng.github.io/posts/2023-06-23-agent/",),
-    bs_kwargs=dict(
-        parse_only=bs4.SoupStrainer(
-            class_=("post-content", "post-title", "post-header")
-        )
-    ),
-)
-blog_docs = loader.load()
-
-# Split
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-text_splitter = RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-    chunk_size=300, 
-    chunk_overlap=50)
-
-# Make splits
-splits = text_splitter.split_documents(blog_docs)
-
-# Index
-from langchain_community.vectorstores import Chroma
-vectorstore = Chroma.from_documents(documents=splits,
-                                    embedding=embd)
-
-retriever = vectorstore.as_retriever(search_kwargs={"k": 1})
-docs = retriever.get_relevant_documents("What is Task Decomposition?")
-
-from langchain_community.llms import Ollama
-llm = Ollama(model="llama2")  
-
-from langchain.prompts import ChatPromptTemplate
-
-# Prompt
+# Set up model and prompt template
+chat = OllamaLLM(model="llama2")
 template = """Answer the question based only on the following context:
 {context}
 
 Question: {question}
 """
-
 prompt = ChatPromptTemplate.from_template(template)
 
-chain = prompt | llm
-res = chain.invoke({"context":docs,"question":"What is Task Decomposition?"})
+# Streaming endpoint
+@router.post("/api/completion")
+async def stream(request: Request, payload: ChatPayload):
+    # Only use the latest user message
+    last_user_msg = next((m.content for m in reversed(payload.messages) if m.role == "user"), None)
+    if not last_user_msg:
+        return {"error": "No user message found."}
 
-print("Answer from our pipeline is:\n")
-print(res)
+    async def event_stream():
+        # Retrieve docs
+        relevant_docs = retriever.get_relevant_documents(last_user_msg)
+        context = "\n\n".join([doc.page_content for doc in relevant_docs])
 
-# built-in rag 
-from langchain import hub
-prompt_hub_rag = hub.pull("rlm/rag-prompt")
+        # Build and run the chain
+        chain = prompt | chat
 
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnablePassthrough
+        # Use async streaming if supported
+        async for chunk in chain.astream({"context": context, "question": last_user_msg}):
+            yield f"data: {chunk}\n\n"
+            await asyncio.sleep(0)  # Yield control
 
-rag_chain = (
-    {"context": retriever, "question": RunnablePassthrough()}
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+        yield "data: [DONE]\n\n"
 
-res_bi = rag_chain.invoke("What is Task Decomposition?")
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
-print("Answer from built in pipeline is:\n")
-print(res_bi)
+app.include_router(router)
 
